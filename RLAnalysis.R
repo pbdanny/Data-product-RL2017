@@ -75,11 +75,10 @@ ggplot(data = subset(rl2017, Monthly_Salary > 1000),
                      color = as.factor(Result))) +
   geom_jitter(alpha = 0.5)
 
-## 3 Visualization ----
+## 3) Visualization ----
 
-# 3.1 Geographical plot
-
-# 3.1.1 Package 'rgdal : R Geospatial Data Abstraction Library'
+# 3.1 Geographical plot ----
+# 3.1.1 Package 'rgdal : R Geospatial Data Abstraction Library' ----
 # View & manipulate geospatial data
 
 library(rgdal)
@@ -110,14 +109,24 @@ plot(thaiMaps, col = "lightgray", lty = 3, lwd = 0.5)
 
 detach(package:rgdal)
 
-# 3.1.2 Package 'tmap : Thematic map'
+# 3.1.2 Package 'tmap : Thematic map' ----
 # Beautiful plot maps data
 
-library(tmaptools)
 library(tmap)
 
 # Load shape file (only file with .shp)
-thaiMaps <- read_shape(file = "/Users/Danny/Documents/Shapefile_tha_adm1_gista_plyg_v5/THA_Adm1_GISTA_plyg_v5.shp")
+thaiMapsFull <- tmaptools::read_shape(file = "/Users/Danny/Documents/Shapefile_tha_adm1_gista_plyg_v5/THA_Adm1_GISTA_plyg_v5.shp")
+
+# Speed-up polygon plotting with simplify shapefile
+# from 'rgeos::gSimplify'; but this command will not copy @data to
+# use 'sp::SpatialPolygonsDataFrame', create new shapefile from 
+# combinning simplify version + original data in @data
+simMaps <- rgeos::gSimplify(thaiMapsFull, tol = 0.1, topologyPreserve = TRUE)
+thaiMaps <- sp::SpatialPolygonsDataFrame(simMaps, data = thaiMapsFull@data)
+rm('simMaps')
+
+# Check if number of polygons same as original version
+length(thaiMapsFull) == length(thaiMaps)
 
 # Create aggregated finalized data by channel and zipcode
 rl2017 <- readRDS(file = "/Users/Danny/Share Win7/rl2017.RDA")
@@ -130,9 +139,13 @@ finalize_channel_zipcode <- aggregate(data = rl2017,
 finalize_channel_zipcode$finl <- finalize_channel_zipcode$Region; finalize_channel_zipcode$Region <- NULL
 
 # Mapping ZipCode to create province_eng name
-library(readxl)
-zipProv <- read_excel("/Users/Danny/Documents/R Project/THA_adm/province.xlsx", sheet = 4)
-detach(package:readxl)
+zipProv <- readxl::read_excel("/Users/Danny/Documents/R Project/THA_adm/province.xlsx", sheet = 4)
+
+# Find unmatched province
+zipProv[!zipProv$Province_Eng %in% thaiMaps$Adm1Name,]
+
+# Change province spelling to match with map data
+zipProv[zipProv$Province_Eng == "Bangkok Metropolis", ]$Province_Eng <- 'Bangkok'
 
 # create first 2 digit of zipcode for mapping 
 finalize_channel_zipcode$zip2digits <- substr(finalize_channel_zipcode$ZipCode, 1, 2)
@@ -149,6 +162,10 @@ finl_zip_map <- subset(finl_zip_map, !is.na(Province_Eng))
 finl_prov <- aggregate(data = finl_zip_map,
                        finl ~ Province_Eng + Region_Eng, FUN = sum)
 
+# Add 'Saraburi' in dataframe for map plotting\
+finl_prov <- rbind(finl_prov, data.frame(Province_Eng = "Saraburi", 
+                                         Region_Eng = "C",
+                                         finl = 0))
 # Create new shape file for ploting
 # use package dplyr since the 'merge' shuffle plot order
 library(dplyr)
@@ -158,14 +175,21 @@ thaiMaps_ktc@data <- left_join(x = thaiMaps_ktc@data, y = finl_prov,
 detach(package:dplyr)
 
 # plot map with qtm (quick plot)
-qtm(thaiMaps_ktc, fill = "finl", fill.pallete = "div", 
+qtm(thaiMaps_ktc, fill = "finl", fill.palette = "div", 
     title = "Finalized by Province", 
-    text = "Adm1Name", text.size = "finl")
+    text = "Adm1Name", text.size = "finl", text.root = 2, fill.textNA = "NA")
+
+# Plot and facet by region
+tm_shape(thaiMaps_ktc) +
+  tm_fill(col = 'finl', palette = 'Blues', title = 'Finalized App') + 
+  tm_facets(by = 'Region_Eng')
+# tm_text(text = 'finl', size = 'finl')
+# tm_text error when faceting map
 
 # Create interactive map
 # by create map object
 thaiMaps_ktc_i <- tm_shape(thaiMaps_ktc) +  # Define map object
-  tm_fill(col = "finl", alpha = 1, palette = "div", title = "Finalized") +  # Define attribute to be filled
+  tm_fill(col = "finl", alpha = 1, palette = "Blues", title = "Finalized App") +  # Define attribute to be filled
   tm_borders() + # Add border
   tm_text(text = "Adm1Name", size = "finl")  +
   tm_view(text.size.variable = TRUE) # set text size be varible 
@@ -175,3 +199,15 @@ tmap_mode("view")
 
 # Start interactive mode
 thaiMaps_ktc_i
+
+# 3.1.3 : ggmaps ----
+
+library(ggmap)
+
+# Raster format : Download map from GoogleMaps.
+# Raster format = bitmap data, could not scales or manipulated.
+# Used as bass map for overlay with other plot
+thaiMaps <- get_map("Thailand", zoom = 8)
+ggmap(thaiMaps)
+
+# Shape file : convert to dataframe before use
