@@ -114,8 +114,14 @@ detach(package:rgdal)
 
 library(tmap)
 
-# Load shape file (only file with .shp)
-thaiMapsFull <- tmaptools::read_shape(file = "/Users/Danny/Documents/Shapefile_tha_adm1_gista_plyg_v5/THA_Adm1_GISTA_plyg_v5.shp")
+# Load shape file with 'rgdal' package
+# use 'readOGR' since more parameter to manipulate 
+# encoding than tmapstool::read_shape
+# thaiMapsFull <- tmaptools::read_shape(file = "/Users/Danny/Documents/Shapefile_tha_adm1_gista_plyg_v5/THA_Adm1_GISTA_plyg_v5.shp")
+
+thaiMapsFull <- rgdal::readOGR(dsn = "/Users/Danny/Documents/Shapefile_tha_adm1_gista_plyg_v5",
+          layer = "THA_Adm1_GISTA_plyg_v5", stringsAsFactors = FALSE, 
+          encoding = "UTF-8", use_iconv = TRUE)
 
 # Speed-up polygon plotting with simplify shapefile
 # from 'rgeos::gSimplify'; but this command will not copy @data to
@@ -124,9 +130,25 @@ thaiMapsFull <- tmaptools::read_shape(file = "/Users/Danny/Documents/Shapefile_t
 simMaps <- rgeos::gSimplify(thaiMapsFull, tol = 0.1, topologyPreserve = TRUE)
 thaiMaps <- sp::SpatialPolygonsDataFrame(simMaps, data = thaiMapsFull@data)
 rm('simMaps')
+# store 'thaiMaps' as R named object '.Rdata'
+save(thaiMaps, file = "thai shapefile adm1 simplify.Rdata")
+# load back 'thaiMaps'
+load(file = "thai shapefile adm1 simplify.Rdata")
 
 # Check if number of polygons same as original version
 length(thaiMapsFull) == length(thaiMaps)
+
+# Save back simplify shapefile data
+# Create folder for store all shapefile data
+# dir.create("thai shapefile adm 1 simplify")
+# anyway store the @data could not do in "UTF-8"
+# rgdal::writeOGR(obj = thaiMaps, dsn="thai shapefile adm 1 simplify", 
+#                 layer="thai_adm1_simplify", driver="ESRI Shapefile",
+#                 encoding = "UTF-8")
+# test <- rgdal::readOGR(dsn="thai shapefile adm 1 simplify", 
+#                        layer="thai_adm1_simplify",
+#                        encoding = "UTF-8")
+
 
 # Create aggregated finalized data by channel and zipcode
 rl2017 <- readRDS(file = "/Users/Danny/Share Win7/rl2017.RDA")
@@ -148,7 +170,8 @@ zipProv[!zipProv$Province_Eng %in% thaiMaps$Adm1Name,]
 zipProv[zipProv$Province_Eng == "Bangkok Metropolis", ]$Province_Eng <- 'Bangkok'
 
 # create first 2 digit of zipcode for mapping 
-finalize_channel_zipcode$zip2digits <- substr(finalize_channel_zipcode$ZipCode, 1, 2)
+finalize_channel_zipcode$zip2digits <- substr(finalize_channel_zipcode$ZipCode, 
+                                              1, 2)
 
 # create dataframe by left join finalized data with zipcode data 
 # 'left join' by merge with parameter 'all.x' = TRUE
@@ -189,7 +212,8 @@ tm_shape(thaiMaps_ktc) +
 # Create interactive map
 # by create map object
 thaiMaps_ktc_i <- tm_shape(thaiMaps_ktc) +  # Define map object
-  tm_fill(col = "finl", alpha = 1, palette = "Blues", title = "Finalized App") +  # Define attribute to be filled
+  # Define attribute to be filled
+  tm_fill(col = "finl", alpha = 1, palette = "Blues", title = "Finalized App") +
   tm_borders() + # Add border
   tm_text(text = "Adm1Name", size = "finl")  +
   tm_view(text.size.variable = TRUE) # set text size be varible 
@@ -200,14 +224,70 @@ tmap_mode("view")
 # Start interactive mode
 thaiMaps_ktc_i
 
-# 3.1.3 : ggmaps ----
+# 3.1.3 ggplots ----
 
+# Shape file : convert to dataframe before use
+# use function 'broom::tidy' to convert spatialdataframe to dataframe
+load(file = "thai shapefile adm1 simplify.Rdata")
+thaiMaps_df <- broom::tidy(thaiMaps)
+
+# 'broom' remove all attribute data, mapping back by use polygon id
+# in spatialdataframe as key for mapping attribute data in to map dataframe
+# use 'slot' function to extract 'ID' from object then 
+# add to @data 
+thaiMaps$polyID <- sapply(slot(thaiMaps, "polygons"), 
+                          function(x) slot(x, "ID"))
+
+# mapped @data back by id 
+# thaiMaps_df1 <- merge(x = thaiMaps_df, y = thaiMaps, by.x = "id", by.y = "polyID")
+
+# change 'merge' to dplyr::inner_join, param. change thaiMaps -> thaiMaps@data 
+thaiMaps_df <- dplyr::left_join(thaiMaps_df, thaiMaps@data, 
+                                by = c("id" = "polyID"))
+
+# merge with ktc dataframe 
+thaiMaps_df_ktc <- dplyr::left_join(x = thaiMaps_df, y = finl_prov,
+                               by = c("Adm1Name" = "Province_Eng"))
+# ggplot2
+# aesthetic x = longitude : y = latitude & group = group
+ggplot(data = thaiMaps_df_ktc) +
+  geom_polygon(aes(x = long, y = lat, group = group, fill = finl)) +
+  coord_equal()
+
+# 3.1.4 ggmaps ----
 library(ggmap)
 
 # Raster format : Download map from GoogleMaps.
-# Raster format = bitmap data, could not scales or manipulated.
-# Used as bass map for overlay with other plot
-thaiMaps <- get_map("Thailand", zoom = 8)
+# Raster format = bitmap file, could not scales or manipulated.
+# Used as bass map for overlay with data plot
+thaiMaps <- get_map(location = "Thailand", maptype = "roadmap")
 ggmap(thaiMaps)
 
-# Shape file : convert to dataframe before use
+# Re-create summary data by Zipcode & Region
+library(dplyr)
+rl2017 <- readRDS(file = "/Users/Danny/Share Win7/rl2017.RDA")
+finalize_zipcode <- aggregate(data = rl2017,
+                              Source_Code ~ ZipCode + Region, FUN = length)
+zip_lat_long <- readxl::read_excel("/Users/Danny/Share Win7/R Script/thaizip long lat.xlsx", sheet = 1)
+zip_region <- readxl::read_excel("/Users/Danny/Documents/R Project/THA_adm/province.xlsx", sheet = 4)
+zip_lat_long$ZipCode <- as.character(zip_lat_long$zip)
+zip_lat_long$left_2digits_zip <- substr(zip_lat_long$zip, 1, 2)
+zip_lat_long <- left_join(x = zip_lat_long, y = zip_region,
+                 by = c("left_2digits_zip" = "Left2_Zipcode"))
+lat_long_finalize <- left_join(x = zip_lat_long, y = finalize_zipcode)
+
+
+# use 'qmplot' do overlay dotplot
+qmplot(data = lat_long_finalize, x = lng, y = lat, maptype = "toner-lite",
+       color = I("red"))
+
+# use 'qmplot' do overlay density plot
+qmplot(data = subset(lat_long_finalize, !is.na(Region)), 
+       x = lng, y = lat, maptype = "toner-lite",
+       color = I("red"), geom = "density2d") +
+  facet_wrap( ~ Region_Eng)
+
+# more decoration like ggplots
+qmplot(data = lat_long_finalize, x = lng, y = lat, geom = "blank",
+       maptype = "toner-background") +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon", alpha = .3, color = NA)
